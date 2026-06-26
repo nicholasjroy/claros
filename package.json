@@ -8,7 +8,8 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "tsx src/index.ts",
     "list-markets": "tsx src/list-markets.ts",
-    "get-wallet-balances": "tsx src/get-wallet-balances.ts"
+    "get-wallet-balances": "tsx src/get-wallet-balances.ts",
+    "research": "tsx src/research.ts"
   },
   "repository": {
     "type": "git",
@@ -24,6 +25,7 @@
   "dependencies": {
     "@gensyn-ai/gensyn-delphi-sdk": "^1.2.1",
     "@google/generative-ai": "^0.24.1",
+    "@tavily/core": "^0.7.6",
     "dotenv": "^17.4.2"
   },
   "devDependencies": {
