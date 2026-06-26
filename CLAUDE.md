@@ -24,15 +24,15 @@ decision is backed by a traceable chain of trusted, cited evidence.
 
 How we satisfy each requirement:
 
-| Requirement              | How we meet it                                                        |
-| ------------------------ | --------------------------------------------------------------------- |
-| Autonomous agent         | Single Node process loops over all open markets unattended            |
-| Real action / transact   | Real on-chain `buyShares` on Gensyn testnet → real tx hash            |
-| Grounded in real sources | Tavily retrieves live news + Reddit; every claim is cited             |
-| Monitor / orchestrate    | Continuous market monitoring + screening + decision pipeline          |
-| 3+ sponsor tools         | Gensyn/Delphi, Tavily, Senso, Gemini (4 total)                        |
-| Publish to `cited.md`    | Every decision (executed *and* rejected) written with evidence chain  |
-| Payment rails            | CDP server wallet as Delphi signer (private key for dev; CDP for prod)|
+| Requirement              | How we meet it                                                                        |
+| ------------------------ | ------------------------------------------------------------------------------------- |
+| Autonomous agent         | Single Node process, one random screened market per run, fully unattended             |
+| Real action / transact   | Real on-chain `buyShares` on Gensyn testnet → real tx hash in `cited.md`             |
+| Grounded in real sources | Gemini generates 3 research questions; Tavily retrieves live evidence for each        |
+| Monitor / orchestrate    | Market screening (prob band filter) + 9-step decision pipeline per cycle              |
+| 3+ sponsor tools         | Gensyn/Delphi ✅ Tavily ✅ Gemini ✅ (Senso heuristic stub — see §6)                  |
+| Publish to `cited.md`    | Every decision (executed *and* rejected) written with full evidence + gate rationale  |
+| Payment rails            | Private key signer for dev; CDP server wallet is a one-line env swap for prod         |
 
 ---
 
@@ -59,16 +59,20 @@ agent acts irreversibly on real funds.
 A grounded, auditable trading agent for Delphi information markets that cannot
 act without a citation trail. For every market it considers, the agent:
 
-1. **Retrieves** real-world evidence (Tavily — news + Reddit).
-2. **Grounds & scores** that evidence against verified sources (Senso —
-   citation-trust score).
-3. **Estimates** a probability for each outcome (Gemini).
-4. **Compares** its estimate to the market's on-chain implied probability to
-   find an **edge**.
-5. **Acts only when gated:** it executes a trade (Gensyn/Delphi) *only* when the
-   edge is supported by sources above a trust threshold.
-6. **Publishes** every decision to `cited.md` with the full evidence chain:
-   sources, trust scores, reasoning, computed edge, and the on-chain tx hash.
+1. **Screens** all open markets to find genuinely uncertain ones (implied prob
+   in [0.30, 0.70]), then picks one at random.
+2. **Generates research questions** (Gemini) — the market question plus two
+   supporting angles (recent news, historical base rates).
+3. **Retrieves** live evidence for all three questions (Tavily search + extract),
+   deduplicates by URL, producing a combined source pool.
+4. **Scores** source trust (Senso — heuristic stub at 0.85; real API swap-in
+   ready).
+5. **Estimates** a probability for outcome 0 (Gemini), citing specific sources
+   in its reasoning.
+6. **Applies the gate:** executes a trade (Gensyn/Delphi) *only* when all three
+   conditions pass (edge, trust, source count).
+7. **Publishes** every decision — executed and rejected — to `cited.md` (audit
+   trail) and `output/*.html` (human-readable report with clickable source links).
 
 The output is not just a trade. It is **a trade you can audit.**
 
@@ -110,125 +114,150 @@ action → published provenance. This generalizes to any agent that touches fund
 
 ## 6. Stack
 
-| Layer            | Tool                          | Role                                            | Sponsor |
-| ---------------- | ----------------------------- | ----------------------------------------------- | ------- |
-| Markets + execution | Delphi (Gensyn) SDK        | List markets, read probs, quote, buy on-chain   | ✅ Gensyn |
-| Web grounding    | Tavily Search/Extract API     | Live news + Reddit retrieval for RAG            | ✅ Tavily |
-| Citation trust   | Senso (Context OS)            | Ground sources, score citation accuracy         | ✅ Senso  |
-| Reasoning        | Gemini (Google DeepMind)      | Probability estimate + natural-language rationale | ✅ DeepMind |
-| Payment rail     | CDP Server Wallet             | Production signer for Delphi (TEE-secured keys)  | (Coinbase) |
-| Observability    | JSONL → (optional ClickHouse) | Log decisions/trades/PnL for source-trust analysis | (optional) |
+| Layer               | Tool                      | Status      | Role                                                           | Sponsor     |
+| ------------------- | ------------------------- | ----------- | -------------------------------------------------------------- | ----------- |
+| Markets + execution | Delphi (Gensyn) SDK       | ✅ Real      | Screen markets, read probs, quote, `buyShares` on-chain        | ✅ Gensyn    |
+| Web grounding       | Tavily Search/Extract API | ✅ Real      | 3 questions per market → search + extract → deduped sources   | ✅ Tavily    |
+| Research questions  | Gemini 2.5 Flash          | ✅ Real      | Generate 3 targeted queries per market question               | ✅ DeepMind  |
+| Probability estimate| Gemini 2.5 Flash          | ✅ Real      | Estimate outcome probability from research context            | ✅ DeepMind  |
+| Citation trust      | Senso (Context OS)        | ⚠️ Stub      | Heuristic `citationTrust = 0.85`; real API integration ready  | (Senso)     |
+| Payment rail        | Private key (dev)         | ✅ Working   | `DELPHI_SIGNER_TYPE=cdp_server_wallet` for prod swap-in       | (Coinbase)  |
+| Audit trail         | `cited.md`                | ✅ Real      | Every decision written with gate rationale + tx hash          | —           |
+| Human report        | `output/*.html`           | ✅ Real      | Styled HTML with clickable source links per decision          | —           |
+| Observability       | `decisions.jsonl`         | ✅ Real      | Machine-readable log of every decision                        | —           |
 
-**Language: pure TypeScript, single Node process.** Rationale: the Delphi SDK is
-TS-native (critical path); Tavily/Senso/Gemini are plain REST; the workload is
-I/O-bound (no CPU benefit from Rust). One language, one process, fast iteration.
-Rust is explicitly out of scope (noted as future work for a high-frequency
-production screening/edge core extracted to Rust/WASM).
+**Language: TypeScript, single Node process, `tsx` to run.**
 
-**Network: Gensyn testnet** (faucet mock USDC + bridged Sepolia ETH). Trades are
-real on-chain txns with real hashes — which is what "transact" requires — without
-risking real funds.
+**Network: Gensyn testnet** (chain 685685). Trades are real on-chain txns with
+real hashes — which is what "transact" requires — without risking real funds.
 
-**Signer: private key for the build, CDP server wallet for production.** CDP
-provisioning is a setup rabbit hole; we build on the private-key signer and keep
-CDP as a one-line env swap (`DELPHI_SIGNER_TYPE=cdp_server_wallet`).
+**Important SDK note:** `market.id` is the correct `marketAddress` for all SDK
+trading/quote calls (`quoteBuy`, `buyShares`, `ensureTokenApproval`). The
+`market.implementation` field is the shared logic contract address — passing it
+to the gateway causes `MarketProxyNotDeployedByFactory` reverts.
 
 ---
 
 ## 7. Architecture
 
-Single TypeScript Node process. Orchestrator owns the loop and the gate.
+Single TypeScript Node process. `index.ts` owns the loop and the gate.
 
 ```
-                         ┌─────────────────────────────────┐
-                         │   orchestrator (index.ts)        │
-                         │   runs the loop, owns the gate   │
-                         └─────────────────────────────────┘
-   ┌──────────┬───────────┬──────────┬──────────┬──────────┬──────────┐
-   ▼          ▼           ▼          ▼          ▼          ▼          ▼
-delphi.ts  screen.ts  tavily.ts  senso.ts  gemini.ts  decide.ts  publish.ts
-   │          │           │          │          │          │          │
- list/     prob∈        news +    ground +   prob       edge +    cited.md
- quote/    [.3,.7]      reddit    citation-  estimate   gate      + tx hash
- buy       liquidity    sources   trust score                  observe.ts→JSONL
- (CDP)     filter
+                          ┌────────────────────────────────────┐
+                          │         index.ts (orchestrator)     │
+                          │  picks 1 random screened market     │
+                          │  owns the gate + the only buyShares │
+                          └────────────────────────────────────┘
+      ┌──────────┬──────────┬─────────────────┬──────────┬──────────┬──────────┐
+      ▼          ▼          ▼                 ▼          ▼          ▼          ▼
+ client.ts  screen.ts  gemini.ts          tavily.ts  senso.ts  decide.ts  publish.ts
+      │          │       │         │          │          │          │        │       │
+  list/     prob∈    gen 3q   estimate    research   trust     edge +   cited.md  HTML
+  quote/   [.3,.7]  questions  (prob+     (per q →   score    gate      +JSONL   report
+  buy      filter              reasoning)  sources)  (stub)
 ```
 
-### Pipeline (per cycle)
+### Pipeline (per run — `npm start`)
 
 ```
-1. INGEST     delphi.listOpenMarkets()  → markets + on-chain implied probs
-2. SCREEN     screen.filter(markets)    → prob ∈ [0.3,0.7], liquidity band   (no API/LLM)
-3. RESEARCH   tavily.research(market)   → live news + reddit sources
-4. GROUND     senso.ground(sources)     → scored sources + citationTrust
-5. REASON     gemini.estimate(...)      → outcome probability + rationale
-6. DECIDE     decide.evaluate(...)      → edge = |geminiProb − marketProb|; apply gate
-7. ACT        delphi.executeBuy(...)    → on-chain buy (only if gate passes) → tx hash
-8. PUBLISH    publish.toCitedMd(record) → evidence chain to cited.md
-9. OBSERVE    observe.log(record)       → JSONL (optional ClickHouse) for PnL/trust analysis
+1. INGEST    client.listMarkets()             → all open markets + implied probs
+2. SCREEN    screen(markets)                  → prob ∈ [0.30, 0.70]; pick 1 at random
+3. QUESTION  gemini.generateResearchQuestions → 3 targeted search queries
+4. RESEARCH  tavily.research(question) × 3   → sources per query; dedup by URL
+5. GROUND    senso.ground(sources)            → scoredSources + citationTrust (stub: 0.85)
+6. REASON    gemini.estimate(market, sources) → { prob, reasoning } citing sources by [n]
+7. DECIDE    decide.evaluate(...)             → edge = |geminiProb − marketProb|; gate
+8. ACT       client.buyShares(...)            → on-chain buy if gate passes → txHash
+9. PUBLISH   publish.toCitedMd(record)        → cited.md evidence block
+             publish.toHtml(record, questions) → output/*.html human report
+10. OBSERVE  observe.log(record)              → decisions.jsonl line
 ```
 
-### Module contracts (stable interfaces — stub bodies, fill later)
+### Actual module contracts (as implemented)
 
 ```ts
-delphi.listOpenMarkets() → OpenMarket[]
-screen.filter(markets)   → OpenMarket[]                 // deterministic, no calls
-tavily.research(market)  → Source[]                     // {url,title,content,publishedAt}
-senso.ground(sources)    → { scoredSources, citationTrust }
-gemini.estimateProbability(market, ctx) → { prob, reasoning }
-decide.evaluate(market, estimate, trust) → { action, edge, rationale }
-delphi.quoteBuy(addr, idx, shares)  → BuyQuote          // read-only, no gas
-delphi.executeBuy(addr, idx, shares)→ BuyResult         // on-chain, the ONLY money move
-publish.toCitedMd(record)           → void
-observe.log(record)                 → void
+// client.ts — Delphi SDK singleton + unit helpers
+client.listMarkets({ status, limit, pricesAndImpliedProbabilities }) → { markets }
+client.quoteBuy({ marketAddress: market.id, outcomeIdx, sharesOut })  → { tokensIn }
+client.ensureTokenApproval({ marketAddress: market.id, minimumAmount })
+client.buyShares({ marketAddress: market.id, outcomeIdx, sharesOut, maxTokensIn }) → { transactionHash }
+
+// screen.ts
+screen(markets: any[]): any[]                        // prob ∈ [PROB_MIN, PROB_MAX], sort by |p − 0.5|
+
+// gemini.ts
+generateResearchQuestions(market: any): Promise<string[]>          // 3 search queries
+estimate(market: any, sources: Source[]): Promise<EstimateResult>  // { prob, reasoning }
+
+// tavily.ts
+research(question: string): Promise<Source[]>        // search + extract + relevance filter
+
+// senso.ts
+ground(sources: Source[]): Promise<{ scoredSources: ScoredSource[]; citationTrust: number }>
+
+// decide.ts
+evaluate(market, est, citationTrust, sources) → { action: "BUY"|"SKIP", edge, rationale, outcomeIdx }
+
+// publish.ts
+toCitedMd(record: DecisionRecord): void              // appends to cited.md
+toHtml(record: DecisionRecord, questions: string[]): void  // writes output/*.html
+
+// observe.ts
+log(record: DecisionRecord): void                    // appends to decisions.jsonl
 ```
 
-> Build the skeleton with all stubs first; the pipeline should *run* end-to-end
-> within the first ~45 min even when Senso/ClickHouse are stubbed. Stable
-> interfaces let us cut a layer under time pressure without collapse.
+---
+
+## 8. Build status (completed)
+
+The MVP sprint is complete. All items below are done.
+
+| Phase | What was built | Status |
+|-------|---------------|--------|
+| Setup | Repo scaffold, SDK install, `list-markets.ts` verified | ✅ |
+| Delphi wrapper | `client.ts` — SDK singleton, unit helpers, balance checker | ✅ |
+| Screening | `screen.ts` — prob band filter [0.30, 0.70], random pick | ✅ |
+| Types | `types.ts` — `Source`, `ScoredSource`, `EstimateResult`, `DecisionRecord` | ✅ |
+| Gate logic | `decide.ts` — edge + trust + sourceCount gate, per-condition rationale | ✅ |
+| Tavily | `tavily.ts` — search + extract + relevance filter; `research(question)` | ✅ |
+| Gemini | `gemini.ts` — `generateResearchQuestions()` + `estimate()` with Gemini 2.5 Flash | ✅ |
+| Senso | `senso.ts` — heuristic stub (`citationTrust = 0.85`) | ⚠️ stub |
+| Orchestrator | `index.ts` — full 9-step pipeline, owns `buyShares` | ✅ |
+| Audit trail | `publish.ts` — `toCitedMd()` + `toHtml()` (styled HTML with clickable links) | ✅ |
+| Observability | `observe.ts` — JSONL line per decision | ✅ |
+| Real trades | 4+ on-chain `buyShares` txns executed on Gensyn testnet | ✅ |
+| `cited.md` | Clean — 1 EXECUTED (real Tavily sources + Gemini reasoning) + 1 REJECTED | ✅ |
+
+### Demo script (3 minutes)
+
+1. **"No citation, no trade."** Open `cited.md` — show the gate conditions and the
+   rejected entry with a clear, evidence-based rationale.
+2. **Rejected trade.** Point to the REJECTED block: `citationTrust 0.85 < TRUST_MIN 0.99` —
+   the gate fired before the money moved.
+3. **Executed trade.** Point to the EXECUTED block: 15 real sources → Gemini estimated
+   15% vs market's 50% → edge 0.35 → BUY "No" → tx hash. Click it.
+4. **Name the sponsors:** Gensyn/Delphi (market + execution), Tavily (grounding),
+   Gemini (reasoning).
+
+### To demo-reset `cited.md` cleanly
+
+```bash
+rm cited.md decisions.jsonl          # wipe audit trail
+npm start                            # one real run → EXECUTED entry
+TRUST_MIN=0.99 npm start             # one forced rejection → REJECTED entry
+```
 
 ---
 
-## 8. Plan (3-hour build)
+## 9. Wallet + funding (done)
 
-### 0:00–0:45 — Setup (fire slow async waits FIRST)
-- First 5 min: create throwaway wallet → `WALLET_PRIVATE_KEY`; start **Sepolia
-  faucet** (slowest dep); open tabs for Delphi API key, Tavily, Senso, Gemini.
-- Scaffold repo, install deps, install Delphi skill.
-- Verify critical path: `scripts/get-wallet-balances.ts`, `scripts/testnet-faucet.ts`,
-  `scripts/list-markets.ts open`.
-- **Hard gate:** if `list-markets` doesn't print real markets, fix *only* that.
+Wallet is funded with Sepolia ETH (bridged to Gensyn testnet) and mock USDC
+(claimed via faucet). Trades are live.
 
-### 0:45–1:30 — Thin vertical slice (stubs allowed)
-- One hardcoded market, end-to-end: delphi → tavily (real) → senso (stub trust
-  0.9) → gemini (real) → decide → write `cited.md` with a **quote** as proof-of-intent.
+Verify at any time: `npm run get-wallet-balances`
 
-### 1:30–2:15 — Make it real and autonomous
-- `screen.ts` over ALL markets (prob band + liquidity).
-- Real Senso ingest/score (keep stub if it fights).
-- **Real testnet trade** on best gated market → capture tx hash → into `cited.md`.
-  *(Non-negotiable proof-of-work.)*
-
-### 2:15–2:45 — Observability (demo payoff)
-- `observe.ts` → JSONL (ClickHouse only if trivially up).
-- Make `cited.md` legible: per-market evidence chain; show **rejected** trades.
-- Wrap orchestrator in a loop / `--once` for demo.
-
-### 2:45–3:00 — Demo prep + buffer (sacred)
-- 3-min story: "No citation, no trade." Show one executed trade (full chain + tx
-  on explorer) and one rejected trade (with reason). Name the 4 sponsors.
-
-### Triage order (when something overruns — each cut still leaves a coherent project)
-1. ClickHouse → JSONL.
-2. Real Senso → heuristic trust stub.
-3. Multi-market screening → curated handful.
-4. **NEVER cut:** one real Tavily-grounded decision + one real testnet trade with
-   a tx hash in `cited.md`.
-
----
-
-## 9. Parallelization note (no funded wallet yet)
-There is a wallet with no funds yet. A throwaway key could be used for testing. My teammate is currently working on the wallet.
+To top up USDC if balance drops: the faucet contract gives 1000 mock USDC per
+call — see §11.10.
 
 ## 10. Environment variables
 
@@ -498,28 +527,35 @@ const data = await subgraph.query<{ gatewayBuys: any[] }>(`{
 
 ---
 
-## 12. Repo layout (target)
+## 12. Repo layout (actual)
 
 ```
-cited-agent/
-  CLAUDE.md            ← this file
-  .env                 ← keys (gitignored)
-  .env.example
+claros/
+  CLAUDE.md              ← this file
+  .env                   ← keys (gitignored)
   package.json
   tsconfig.json
   src/
-    index.ts           ← orchestrator + gate + loop
-    delphi.ts          ← Delphi SDK wrapper (DONE)
-    screen.ts          ← deterministic prob/liquidity filter
-    tavily.ts          ← web grounding (news + reddit)
-    senso.ts           ← ground + citation-trust score (stub-first)
-    gemini.ts          ← probability estimate + rationale
-    decide.ts          ← edge = |geminiProb − marketProb|; THE GATE
-    publish.ts         ← cited.md writer
-    observe.ts         ← JSONL log (optional ClickHouse)
-    types.ts           ← shared interfaces
-  cited.md             ← agent output (the deliverable)
-  decisions.jsonl      ← observability log
+    index.ts             ← orchestrator: screen → question → research → estimate → gate → buy → publish
+    client.ts            ← Delphi SDK singleton + unit helpers (toUsdc, toShares, toProb, ...)
+    types.ts             ← Source, ScoredSource, EstimateResult, DecisionRecord
+    screen.ts            ← prob band filter [0.30, 0.70], random pick, top-N closest to 0.5
+    gemini.ts            ← generateResearchQuestions() + estimate() via Gemini 2.5 Flash
+    tavily.ts            ← research(question) — search + extract + relevance filter
+    senso.ts             ← ground() stub: scoredSources + citationTrust = 0.85
+    decide.ts            ← evaluate() gate: edge ≥ EDGE_MIN AND trust ≥ TRUST_MIN AND sources ≥ N
+    publish.ts           ← toCitedMd() appends to cited.md; toHtml() writes output/*.html
+    observe.ts           ← log() appends one JSON line to decisions.jsonl
+    list-markets.ts      ← standalone: list/filter markets with probs
+    get-wallet-balances.ts ← standalone: ETH + USDC balance check
+    research.ts          ← standalone: deep Tavily research for a question → output/*.json + .md
+    quote-buy.ts         ← standalone: read-only quote
+    buy-shares.ts        ← standalone: manual on-chain buy
+    sell-shares.ts       ← standalone: manual on-chain sell
+  cited.md               ← audit trail (the hackathon deliverable)
+  decisions.jsonl        ← machine-readable decision log
+  output/                ← HTML reports, one per decision run
+  gensyn-delphi-skills/  ← cloned Delphi skills repo (reference only, do not edit)
 ```
 
 ---
@@ -541,175 +577,49 @@ cited-agent/
 
 ---
 
-## 14. Current state (2026-06-26)
+## 14. Key implementation notes (gotchas)
 
-### What exists
+### `market.id` vs `market.implementation`
 
-| File | Status | Notes |
-|------|--------|-------|
-| `src/client.ts` | ✅ Done | Delphi SDK client, unit helpers (`toUsdc`, `toShares`, `toProb`, etc.) |
-| `src/list-markets.ts` | ✅ Tested | Lists markets with spot prices + implied probs; works against testnet |
-| `src/get-wallet-balances.ts` | ✅ Done | ETH + USDC balance checker |
-| `.env` | ⚠️ Partial | Has `DELPHI_API_ACCESS_KEY`, `DELPHI_SIGNER_TYPE`, `WALLET_PRIVATE_KEY` — **missing** `TAVILY_API_KEY`, `SENSO_API_KEY`, `GEMINI_API_KEY` |
+**Always use `market.id` as the `marketAddress`** for all SDK calls:
+`quoteBuy`, `buyShares`, `ensureTokenApproval`. 
 
-### What is missing (entire pipeline)
+`market.implementation` is the shared logic contract (same address for every
+market). Passing it to the gateway causes
+`MarketProxyNotDeployedByFactory` reverts. The API docs say use
+`implementation`; the API docs are wrong for this SDK version.
 
-`types.ts`, `screen.ts`, `tavily.ts`, `senso.ts`, `gemini.ts`, `decide.ts`,
-`publish.ts`, `observe.ts`, `index.ts`, `cited.md`, `decisions.jsonl`
+### Gemini model name
 
-### Naming note
+Use `gemini-2.5-flash`. `gemini-2.0-flash` is deprecated and returns 404.
+Override via `GEMINI_MODEL` env var.
 
-The CLAUDE.md target layout calls the Delphi wrapper `delphi.ts`; in the actual
-repo it is `client.ts` (already exports `client`, `getWalletAddress`, and all
-unit helpers). Do not rename it — reference it as `src/client.ts`.
+### Tavily `research(question)` signature
 
-### Wallet status
+`research()` takes a **question string**, not a market object. The orchestrator
+calls it three times (once per Gemini-generated query) and deduplicates the
+results by URL before passing them to `estimate()`.
 
-Teammate is funding the throwaway wallet (Sepolia ETH → bridge → Gensyn
-testnet; mock USDC via faucet). Until funded, use `quoteBuy` as proof-of-intent
-everywhere `executeBuy` would go.
+### Gate never fires SKIP by default
 
----
+With Senso stubbed at 0.85 and Tavily returning 5–15 sources per question, the
+only live gate condition that can fail is `edge < EDGE_MIN`. To force a SKIP for
+demo purposes: `TRUST_MIN=0.99 npm start`.
 
-## 15. 1-Hour MVP Sprint (2 people, wallet funded)
+### `spotImpliedProbabilities` is `number[]` (0..1), not bigint
 
-**Hard deliverable:** `cited.md` contains ≥1 executed trade (real tx hash) and ≥1
-rejected trade (gate failure reason). Everything else is secondary.
-
-**Rule:** stubs are fine everywhere except Tavily (must be real — it's the
-grounding claim) and `executeBuy` (must be real — it's the "transact" claim).
-Gemini and Senso can be stubbed if they fight.
+The `listMarkets` call with `pricesAndImpliedProbabilities: true` returns
+pre-converted decimal floats on the market object. No `/ 1e18` conversion
+needed — use directly as `0..1`.
 
 ---
 
-### 0:00–0:15 — Foundation (Person 1 + Person 2 simultaneously)
+## 15. What's left / next steps
 
-**Person 1 — types + pure logic**
-- `src/types.ts` — interfaces: `Source`, `ScoredSource`, `EstimateResult`, `DecisionRecord`
-- `src/screen.ts` — filter `markets` to prob ∈ [0.30, 0.70]; return top 3 by closest to 0.5
-- `src/decide.ts` — `evaluate(market, estimate, trust)` → gate → `{ action, edge, rationale }`
-- `src/publish.ts` — append one `## Decision` block to `cited.md`
-- `src/observe.ts` — append one JSON line to `decisions.jsonl`
-
-**Person 2 — API keys + stubs**
-- Confirm wallet is funded: `npx tsx src/get-wallet-balances.ts` (need ETH + USDC > 0)
-- Get **Tavily** key → add `TAVILY_API_KEY` to `.env` → write `src/tavily.ts` (real)
-- Get **Gemini** key → add `GEMINI_API_KEY` to `.env` → write `src/gemini.ts`
-  - If no key yet: stub `{ prob: 0.65, reasoning: "stub — replace with Gemini" }`
-- `src/senso.ts` — start as heuristic stub: `citationTrust = 0.85` (replace if time)
-
----
-
-### 0:15–0:40 — Integration (both work on `src/index.ts`)
-
-Wire the 9-step pipeline. Person 1 owns the file; Person 2 drops in real module
-calls as they finish them.
-
-```ts
-// index.ts skeleton — fill in as modules land
-import { client } from "./client.js";
-import { screen }  from "./screen.js";
-import { research } from "./tavily.js";
-import { ground }   from "./senso.js";
-import { estimate } from "./gemini.js";
-import { evaluate } from "./decide.js";
-import { toCitedMd } from "./publish.js";
-import { log }      from "./observe.js";
-
-async function runOnce() {
-  const { markets } = await client.listMarkets({ status: "open", limit: 50, pricesAndImpliedProbabilities: true });
-  const candidates = screen(markets);                        // deterministic filter
-  for (const market of candidates) {
-    const sources        = await research(market);           // Tavily (real)
-    const { scoredSources, citationTrust } = await ground(sources); // Senso (stub ok)
-    const { prob, reasoning } = await estimate(market, sources);    // Gemini (stub ok)
-    const decision = evaluate(market, { prob, reasoning }, citationTrust, sources);
-    let txHash: string | null = null;
-    if (decision.action === "BUY") {
-      const sharesOut = BigInt(Math.round(5 * 1e18));
-      const { tokensIn } = await client.quoteBuy({ marketAddress: market.implementation as `0x${string}`, outcomeIdx: decision.outcomeIdx, sharesOut });
-      const maxTokensIn = tokensIn * 10200n / 10000n;       // 2% slippage
-      await client.ensureTokenApproval({ marketAddress: market.implementation as `0x${string}`, minimumAmount: maxTokensIn });
-      const { transactionHash } = await client.buyShares({ marketAddress: market.implementation as `0x${string}`, outcomeIdx: decision.outcomeIdx, sharesOut, maxTokensIn });
-      txHash = transactionHash;
-      console.log("EXECUTED:", txHash);
-    }
-    const record = { market, sources: scoredSources, citationTrust, prob, reasoning, decision, txHash, timestamp: new Date().toISOString() };
-    toCitedMd(record);
-    log(record);
-  }
-}
-
-runOnce().catch(console.error);
-```
-
-Add `"start": "tsx src/index.ts"` to `package.json`.
-
----
-
-### 0:40–0:50 — First live run
-
-```bash
-npx tsx src/index.ts
-```
-
-- Watch logs. If gate never triggers: temporarily lower `EDGE_MIN` to `0.03`.
-- If `executeBuy` reverts: re-quote (price moved), or raise slippage to `10500n / 10000n`.
-- Capture first tx hash from console.
-
----
-
-### 0:50–1:00 — Demo polish (sacred)
-
-- Open `cited.md` — must show ≥1 `EXECUTED` block with tx hash and ≥1 `REJECTED` block.
-- If only executed trades: temporarily raise `TRUST_MIN` to `0.99` for one run to force a rejection, then restore.
-- 3-sentence demo script: (1) "No citation, no trade — here's the gate." (2) "Here's a rejected trade and why." (3) "Here's a real on-chain tx — click the hash."
-
----
-
-### Triage (if something overruns)
-
-| Cut | Effect |
-|-----|--------|
-| Real Senso → heuristic stub | Lose one sponsor mention; keep the gate |
-| Real Gemini → stub 0.65 | Lose reasoning quality; gate still works |
-| Multi-market → one hardcoded market | Lose screening demo; keep the deliverable |
-| **Never cut** | Real Tavily sources + real `executeBuy` tx hash in `cited.md` |
-
----
-
-### Module signatures (stable contracts — agree on these before diverging)
-
-```ts
-// types.ts
-export interface Source       { url: string; title: string; content: string; publishedAt?: string }
-export interface ScoredSource extends Source { trustScore: number }
-export interface EstimateResult { prob: number; reasoning: string }
-export interface DecisionRecord {
-  market: any; sources: ScoredSource[]; citationTrust: number;
-  prob: number; reasoning: string;
-  decision: { action: "BUY"|"SKIP"; edge: number; rationale: string; outcomeIdx: number };
-  txHash: string | null; timestamp: string;
-}
-
-// screen.ts
-export function screen(markets: any[]): any[]
-
-// tavily.ts
-export async function research(market: any): Promise<Source[]>
-
-// senso.ts
-export async function ground(sources: Source[]): Promise<{ scoredSources: ScoredSource[]; citationTrust: number }>
-
-// gemini.ts
-export async function estimate(market: any, sources: Source[]): Promise<EstimateResult>
-
-// decide.ts
-export function evaluate(market: any, est: EstimateResult, citationTrust: number, sources: ScoredSource[]): { action: "BUY"|"SKIP"; edge: number; rationale: string; outcomeIdx: number }
-
-// publish.ts
-export function toCitedMd(record: DecisionRecord): void
-
-// observe.ts
-export function log(record: DecisionRecord): void
-```
+| Item | Priority | Notes |
+|------|----------|-------|
+| Real Senso integration | Medium | Replace `senso.ts` heuristic stub with actual API call; `SENSO_API_KEY` needed |
+| CDP server wallet | Low | Swap `DELPHI_SIGNER_TYPE=cdp_server_wallet` + CDP env vars for production |
+| Loop mode | Low | Wrap `runOnce()` in `setInterval` or a cron for fully autonomous operation |
+| Subgraph liquidity filter | Low | Use `getSubgraph()` trade counts to screen out illiquid markets in `screen.ts` |
+| Position tracking | Low | `client.listPositions()` to track unrealised PnL per market |
