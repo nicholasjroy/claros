@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "delphi": {
+      "source": "gensyn-ai/gensyn-delphi-skills",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "cbaa9b1d2c1445dc0ea0c9bed4006dc0fc8c2d955f11c2e0d2dc2d8d38ec306f"
+    }
+  }
+}

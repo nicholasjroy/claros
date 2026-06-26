@@ -1,0 +1,30 @@
+{
+  "name": "claros",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nicholasjroy/claros.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/nicholasjroy/claros/issues"
+  },
+  "homepage": "https://github.com/nicholasjroy/claros#readme",
+  "dependencies": {
+    "@gensyn-ai/gensyn-delphi-sdk": "^1.2.1",
+    "@google/generative-ai": "^0.24.1",
+    "dotenv": "^17.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.1",
+    "tsx": "^4.22.4",
+    "typescript": "^5.9.3"
+  }
+}
